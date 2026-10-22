@@ -951,9 +951,11 @@ Item {
   Component.onCompleted: applyBarConfig()
 
   // The indicator peek opens as the pointer comes onto the bar and holds until
-  // it leaves. Revealing the indicators widens their section, which can slide a
-  // widget under a stationary pointer, so nothing narrower than the whole bar
-  // can hold it without opening and closing it in a loop.
+  // it leaves, or crosses past the end of the center box onto the panel icons.
+  // Revealing the indicators widens their section, which can slide a widget
+  // under a stationary pointer, so nothing narrower than the stretch of bar up
+  // to that edge, which the reveal never moves, can hold it without opening
+  // and closing it in a loop.
   function setBarHovered(hovered) {
     barHoverCount = Math.max(0, barHoverCount + (hovered ? 1 : -1))
     if (barHoverCount > 0) {
@@ -1582,6 +1584,10 @@ Item {
 
     // The same thickness the bar publishes for its screen (screenBarSizes).
     readonly property int thickness: root.thicknessFor(screen)
+    // Where the center box ends along the bar, set by the drawn center
+    // sections. Hovering past it, over the clock's trailing widgets and the
+    // right section, leaves the indicator peek shut.
+    property real peekEdge: 0
 
     implicitWidth: root.vertical ? thickness : 0
     implicitHeight: root.vertical ? 0 : thickness
@@ -1598,10 +1604,11 @@ Item {
       // hovered while the pointer is over a widget, where a sibling would lose
       // hover to the section the pointer entered.
       HoverHandler {
-        onHoveredChanged: root.setBarHovered(hovered)
+        readonly property bool peeking: hovered && (root.vertical ? point.position.y : point.position.x) < barWindow.peekEdge
+        onPeekingChanged: root.setBarHovered(peeking)
         // Unplugging a monitor destroys its bar without a leave event, which
         // would strand this surface's tally and hold the peek open for good.
-        Component.onDestruction: if (hovered) root.setBarHovered(false)
+        Component.onDestruction: if (peeking) root.setBarHovered(false)
       }
     }
 
@@ -1905,6 +1912,15 @@ Item {
 
     implicitWidth: root.vertical ? root.barSize : beginList.width + centerBox.width + endList.width
     implicitHeight: root.vertical ? beginList.height + centerBox.height + endList.height : root.barSize
+
+    // Both placements sit at the bar surface's origin or anchor off its edge,
+    // so the box's end in the sections is its end on the surface.
+    Binding {
+      when: sections.active && !!sections.window
+      target: sections.window
+      property: "peekEdge"
+      value: root.vertical ? sections.y + centerBox.y + centerBox.height : sections.x + centerBox.x + centerBox.width
+    }
 
     ModuleList {
       id: beginList

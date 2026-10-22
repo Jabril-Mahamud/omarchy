@@ -114,12 +114,13 @@ assertEqual(bar.pickDrawnSlot(null), null, 'bar tolerates a missing slot list')
 
 // Revealing the indicators can slide a neighbouring widget under a stationary
 // pointer; collapsing the peek on that un-hover re-opens it and stutters the
-// bar, so the peek stays held while the pointer is anywhere on the bar.
+// bar, so the peek stays held while the pointer is on the bar short of the
+// center box's end, which the reveal never moves.
 const revealTimer = barSource.slice(barSource.indexOf('id: centerSectionRevealTimer'))
 const revealTimerBody = revealTimer.slice(0, revealTimer.indexOf('\n  }'))
 assert(
   /onTriggered: if \(!root\.barHovered\) root\.centerSectionRevealHeld = false/.test(revealTimerBody),
-  'the indicator peek stays held while the pointer is anywhere on the bar'
+  'the indicator peek stays held while the pointer is on the bar'
 )
 
 // The whole-bar hover has to come from an ancestor of the sections. A sibling
@@ -128,7 +129,7 @@ assert(
 const barLoader = barSource.slice(barSource.indexOf('sourceComponent: root.vertical ? verticalBar : horizontalBar'))
 const barLoaderBody = barLoader.slice(0, barLoader.indexOf('\n    }'))
 assert(
-  /setBarHovered\(hovered\)/.test(barLoaderBody),
+  /onPeekingChanged: root\.setBarHovered\(peeking\)/.test(barLoaderBody),
   'the whole-bar hover handler is a child of the bar loader, above both orientations'
 )
 
@@ -158,7 +159,7 @@ for (const [name, body] of [['slot', moduleSlot], ['spacer', dragSpacer]]) {
 // Unplugging a monitor tears its bar down mid-hover with no leave event, which
 // would leave that surface counted forever and the peek stuck open.
 assert(
-  /Component\.onDestruction: if \(hovered\) root\.setBarHovered\(false\)/.test(barLoaderBody),
+  /Component\.onDestruction: if \(peeking\) root\.setBarHovered\(false\)/.test(barLoaderBody),
   'a bar torn down while hovered gives its hover back'
 )
 
@@ -177,8 +178,8 @@ assert(
   'the pointer coming onto any bar opens the peek, and leaving the last one re-runs the collapse'
 )
 
-// The peek opens from anywhere on the bar, widgets included, so no narrower
-// hover area opens it as well.
+// The peek opens from the bar up to the center box's end, widgets included,
+// so no narrower hover area opens it as well.
 const opensPeek = barSource.split('\n').filter(line => /centerSectionRevealHeld = true/.test(line))
 assertEqual(opensPeek.length, 1, 'exactly one line in the bar opens the indicator peek')
 assert(setBarHoveredBody.includes(opensPeek[0].trim()), 'only the whole-bar hover opens the peek')
