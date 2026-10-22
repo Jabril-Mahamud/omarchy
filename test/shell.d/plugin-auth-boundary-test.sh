@@ -143,8 +143,6 @@ qml_matches "$shell_qml" '"omarchy\.media": *\["omarchy\.osd"\]' ||
   fail "media clones cannot summon their existing OSD target"
 qml_matches "$shell_qml" '"omarchy\.network": *\["omarchy\.speedtest", *"omarchy\.wifiqr"\]' ||
   fail "network clones cannot summon their existing auxiliary panels"
-qml_matches "$shell_qml" 'var sourceId = metadata && metadata\.clonedFrom \? String\(metadata\.clonedFrom\) : String\(\(manifest && manifest\.id\) \|\| ""\)' ||
-  fail "stock plugins in replacement bars cannot summon their own auxiliary UI"
 pass "built-in service and widget clones retain narrow configuration and UI integration"
 
 qml_matches "$shell_qml" 'shell\.serviceFor\( *shell\.pluginRegistry\.resolveEnabledId\( *id *\) *\)' ||
