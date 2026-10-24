@@ -4,7 +4,7 @@ const assert = require('node:assert/strict'), fs = require('node:fs'), vm = requ
 const { URL } = require('node:url')
 const load = require('./loader.cjs')
 const S = load('Security'), M = load('Markup'), D = load('Detect'), Store = load('Store')
-const Layout = load('Layout'), Delivery = load('Delivery'), Settings = load('Settings'), Icons = load('Icons')
+const Layout = load('Layout'), Delivery = load('Delivery'), Icons = load('Icons')
 const snap = (n, key = 'k') => Store.snapshot(n, key, { Normal: 1 })
 
 // ---------------------------------------------------------------- URL policy
@@ -242,19 +242,15 @@ for (const body of ['Your verification code is 938271', 'Your code is 938 271', 
 
 // ------------------------------------------------------------------ delivery
 {
-  const state = over => ({ doNotDisturb: false, globalSnoozed: false, sourceSnoozed: false, codesBypassQuiet: true, ...over })
-  for (const [row, over, expected] of [
-    [{ app: 'Slack', urgency: 1 }, {}, ''],
-    [{ app: 'Slack', urgency: 1 }, { doNotDisturb: true }, 'silenced'],
-    [{ app: 'Slack', urgency: 1 }, { globalSnoozed: true }, 'snoozed'],
-    [{ app: 'Slack', urgency: 1 }, { sourceSnoozed: true }, 'snoozed'],
-    [{ app: 'Slack', urgency: 2 }, { doNotDisturb: true }, 'silenced'],      // a branded critical does not punch through
-    [{ app: 'notify-send', urgency: 2 }, { doNotDisturb: true }, ''],
-    [{ app: 'notify-send', urgency: 1 }, { doNotDisturb: true }, 'silenced'],
-    [{ app: 'omarchy-action', urgency: 0 }, { globalSnoozed: true }, ''],
-    [{ app: 'Google', urgency: 1, code: '482913' }, { doNotDisturb: true }, ''],
-    [{ app: 'Google', urgency: 1, code: '482913' }, { doNotDisturb: true, codesBypassQuiet: false }, 'silenced'],
-  ]) assert.equal(Delivery.quietReason(row, state(over)), expected, JSON.stringify([row, over]))
+  for (const [row, dnd, expected] of [
+    [{ app: 'Slack', urgency: 1 }, false, ''],
+    [{ app: 'Slack', urgency: 1 }, true, 'silenced'],
+    [{ app: 'Slack', urgency: 2 }, true, 'silenced'],      // a branded critical does not punch through
+    [{ app: 'notify-send', urgency: 2 }, true, ''],
+    [{ app: 'notify-send', urgency: 1 }, true, 'silenced'],
+    [{ app: 'omarchy-action', urgency: 0 }, true, ''],
+    [{ app: 'Google', urgency: 1, code: '482913' }, true, ''],
+  ]) assert.equal(Delivery.quietReason(row, dnd), expected, JSON.stringify([row, dnd]))
   for (const [row, ephemeral] of [[{ app: 'notify-send' }, true], [{ app: 'omarchy-action' }, true],
                                   [{ app: 'Slack', transient: true }, true], [{ app: 'Slack' }, false]])
     assert.equal(Delivery.isEphemeral(row), ephemeral, row.app)
@@ -276,21 +272,6 @@ for (const body of ['Your verification code is 938271', 'Your code is 938 271', 
   assert.equal(Delivery.barThickness(null, 'plain', 28), 28)
   for (const [position, thickness, top, right] of [['top', 26, 36, 10], ['right', 40, 10, 50], ['bottom', 26, 10, 10], ['left', 26, 10, 10]])
     assert.deepEqual({ ...Delivery.deckMargins(position, thickness, 10) }, { top, right }, position)
-}
-
-// ------------------------------------------------------------------ settings
-{ // Every key optional, every invalid value falls back.
-  const r = Settings.resolve({ fullscreenOverlay: 'steam-away', historyHours: 7, displayName: 7,
-                               offerSnoozeWhenSharing: 'no' })
-  assert.equal(r.fullscreenOverlay, 'all', 'retired step-aside variants fall back')
-  assert.equal(Settings.resolve({ fullscreenOverlay: 'off' }).fullscreenOverlay, 'off')
-  assert.equal(r.historyHours, 24)
-  assert.equal(r.displayName, '')
-  assert.equal(r.offerSnoozeWhenSharing, true)
-  const now = new Date(2026, 9, 19, 22, 30).getTime()
-  assert.equal(Settings.snoozeSeconds('60', now), 3600)
-  assert.equal(Settings.snoozeSeconds('tomorrow', now), 9 * 3600 + 1800)
-  assert.equal(Settings.snoozeSeconds('nope', now), 0)
 }
 
 // --------------------------------------------------- Service.qml functions
@@ -326,10 +307,10 @@ function runIn(scope, ...names) {
 
 // Admission, close and replay run for real; only the ListModel, QObject
 // signals, the deferred event loop and external effects are faked.
-const capacityFunctions = ['pinDeckDisplay', 'showsOn', 'fullscreenOn', 'rememberRecent', 'recentForPanel',
+const capacityFunctions = ['pinDeckDisplay', 'showsOn', 'fullscreenOn',
   'durationFor', 'liveCount', 'reserveLive', 'releaseLive',
   'nextKey', 'rowIndexFor', 'keyForOriginal', 'handleNotification', 'watchNotification', 'showRow', 'release', 'closeToast',
-  'closeToasts', 'finishLeaving', 'finishClose', 'clearAll', 'dismissNewest', 'releaseHeld', 'restoreRows', 'actionsOf', 'dismissOne',
+  'closeToasts', 'unmarkLeaving', 'finishDeparted', 'newestLive', 'finishLeaving', 'finishClose', 'clearAll', 'dismissNewest', 'releaseHeld', 'restoreRows', 'actionsOf', 'dismissOne',
   'storePut', 'storeClose', 'storeDrop', 'storeRecord', 'saveSoon', 'loadLive']
 
 function newCapacityScope() {
@@ -342,25 +323,22 @@ function newCapacityScope() {
   const later = []
   const s = {
     toasts, refs: {}, refsRevision: 0, keySeed: 0, liveKeys: Object.create(null),
-    maxLiveNotifications: 100, heights: {}, fresh: {}, leaving: {}, layoutRevision: 0,
-    held: [], doNotDisturb: false, globalSnoozeUntil: 0,
-    recentRows: [], recentLimit: 20,
-    liveEntries: [], historyEntries: [], historyHours: 24, unsaved: {}, liveLoaded: false,
+    maxLiveNotifications: 100, heights: {}, fresh: {}, leaving: {}, departures: {}, layoutRevision: 0,
+    arriving: '', jumping: false, travel: 24, arriveDuration: 250, leaveDuration: 200, placements: {},
+    held: [], doNotDisturb: false,
+    liveEntries: [], historyEntries: [], unsaved: {}, liveLoaded: false,
     saveTimer: { running: false, start() {} },
-    configuredDisplayName: 'fixture-display', deckDisplayName: '',
-    stepsAside: false, hyprRevision: 0,
+    deckDisplayName: '',
+    hyprRevision: 0,
     displayNames: ['fixture-display'], focusedDisplayName: 'fixture-display',
     Quickshell: { screens: [] }, Hyprland: { monitorFor: screen => screen.monitor },
-    snoozeRevision: 0, snoozes: {},
-    codesBypassQuiet: false,
     lowDuration: 5000, normalDuration: 8000, maxDuration: 30000,
-    snoozedUntil: key => s.snoozes[key] || 0,
-    liveSnoozes: () => Object.keys(s.snoozes).map(key => ({ key })),
     Security: S, Delivery, Store,
     NotificationUrgency: { Critical: 2, Normal: 1, Low: 0 },
     Qt: { callLater: f => later.push(f),
       md5: value => require('node:crypto').createHash('md5').update(value).digest('hex') },
-    Style: { space: n => n },
+    Style: { space: n => n, duration: n => n },
+    departureDeadline: { running: false, start() {}, restart() {} },
     holding: () => s.pointerHolding === true,
     snapshot: () => ({}), deckHeight: 0, retarget: () => {}, land: () => {}, layout: { placements: {} },
   }
@@ -411,12 +389,9 @@ const summaries = rows => Array.from(rows, row => row.summary)
   const game = { lastIpcObject: { fullscreen: 1, class: 'steam_app_31' } }
   s.Quickshell.screens = [{ name: 'game',
     monitor: { activeWorkspace: { hasFullscreen: true, toplevels: { values: [game] } } } }]
-  s.stepsAside = true
   assert.equal(s.fullscreenOn('game'), false)
   game.lastIpcObject.fullscreen = 2
   assert.equal(s.fullscreenOn('game'), true)
-  s.stepsAside = false
-  assert.equal(s.fullscreenOn('game'), false)
 }
 
 { // Rapid single dismissals must skip rows that are leaving but not yet removed.
@@ -441,84 +416,61 @@ const summaries = rows => Array.from(rows, row => row.summary)
   for (const sender of senders) assert.equal(sender.closeAttempts, 1)
 }
 
-{ // Clearing takes every card out together, with one jump.
+{ // A clicked card rises out before it goes; a keypress clears every card with one jump.
   const s = newCapacityScope()
   s.admit(...[1, 2, 3].map(id => s.fakeNotification(id)))
-  let lands = 0
+  let lands = 0, moves = 0
   s.land = () => { lands += 1 }
-  assert.equal(s.clearAll('dismissed'), 3)
+  s.retarget = () => { moves += 1 }
+  s.closeToast(s.toasts.get(0).key, 'dismissed')
+  s.drainCallLater()
+  assert.equal(moves, 1)
+  assert.equal(s.toasts.count, 3, 'a clicked card keeps its row until its exit move finishes')
+  assert.equal(s.clearAll('dismissed', true), 3)
   assert.equal(lands, 1)
   s.drainCallLater()
-  assert.equal(s.toasts.count, 0)
+  assert.equal(s.toasts.count, 0, 'the jump takes the card already on its way out too')
 }
 
-{ // Expired notifications remain readable, newest first, without unbounded retention.
+{ // A card on its way out is passed over by the shortcuts, and goes on its own deadline
+  // however often an update restarts the scene.
   const s = newCapacityScope()
-  for (let i = 1; i <= 25; i++) {
-    s.admit(s.fakeNotification(i, 'Message ' + i))
-    s.finishClose(s.keyForOriginal(i), 'expired')
-  }
-  assert.equal(s.toasts.count, 0)
-  assert.deepEqual(summaries(s.recentRows), Array.from({ length: 20 }, (_, i) => 'Message ' + (25 - i)))
+  s.admit(...[1, 2].map(id => s.fakeNotification(id)))
+  const [front, back] = s.toasts.rows.map(row => row.key)
+  const at = { y: 0, scale: 1, opacity: 1, height: 58 }
+  s.snapshot = () => ({ [front]: at, [back]: at })
+  s.closeToast(front, 'dismissed')
+  assert.equal(s.newestLive(), back, 'the activation shortcut must not run the departing card again')
+  s.finishDeparted(Date.now())
+  assert.equal(s.toasts.count, 2, 'the card rises out before it goes')
+  s.finishDeparted(Date.now() + 1000)
+  assert.deepEqual(s.toasts.rows.map(row => row.key), [back], 'its deadline removes it without the scene settling')
 }
 
-{ // Replacing a live sender updates one recent entry and moves it to the front.
+{ // A sender replacing a card during its exit brings it back instead of losing the update.
   const s = newCapacityScope()
-  const first = s.fakeNotification(1, 'First')
-  s.admit(first, s.fakeNotification(2, 'Second'))
-  first.replace({ summary: 'First updated', body: 'Latest text' })
+  const sender = s.fakeNotification(1, 'Expiring')
+  s.admit(sender)
+  const key = s.keyForOriginal(1)
+  s.snapshot = () => ({ [key]: { y: 0, scale: 1, opacity: 1, height: 58 } })
+  s.closeToast(key, 'expired')
+  sender.replace({ summary: 'Still going', expireTimeout: 12345 })
   s.drainCallLater()
-  assert.deepEqual(summaries(s.recentRows), ['First updated', 'Second'])
-  assert.equal(s.recentRows[0].bodyLine, 'Latest text')
+  s.finishDeparted(Date.now() + 1000)
+  assert.equal(s.toasts.count, 1)
+  assert.equal(s.toasts.get(0).summary, 'Still going')
+  assert.equal(sender.expiries, 0, 'the fresh notification must not be reported expired')
 }
 
-{ // A code must not outlive its toast, even in source metadata used for filtering.
+{ // A code must not outlive its toast, even in source metadata.
   const s = newCapacityScope()
   const code = s.fakeNotification(1, 'Your verification code is 938271')
   code.appName = 'Source 938271'
   s.admit(code)
-  const group = s.toasts.get(0).groupKey
   s.finishClose(s.keyForOriginal(1), 'expired')
-  assert.equal(s.recentForPanel(5)[0].bodyLine, '[redacted]')
-  assert.ok(Store.redacted(s.recentForPanel(5)[0]))
+  assert.ok(Store.redacted(s.historyEntries[0]))
   assert.ok(!Store.redacted({ summary: 'Verification notification', body: 'a real message' }))
-  assert.ok(!JSON.stringify(s.recentRows).includes('938271'))
-  s.snoozes[group] = 1
-  assert.equal(s.recentForPanel(5).length, 0)
-}
-
-{ // Full quiet hides the entire recent list and held arrivals never backfill it.
-  const s = newCapacityScope()
-  s.admit(s.fakeNotification(1, 'Before quiet'))
-  s.doNotDisturb = true
-  s.handleNotification(s.fakeNotification(2, 'Silenced arrival'))
-  assert.equal(s.recentForPanel(5).length, 0)
-  s.doNotDisturb = false
-  s.globalSnoozeUntil = 1
-  s.handleNotification(s.fakeNotification(3, 'Global snooze arrival'))
-  assert.equal(s.recentForPanel(5).length, 0)
-  s.globalSnoozeUntil = 0
-  assert.deepEqual(summaries(s.recentForPanel(5)), ['Before quiet'])
-}
-
-{ // Filter before applying N, preserving other sources and restoring earlier rows on wake.
-  const s = newCapacityScope()
-  const snoozed = s.fakeNotification(2, 'Soon snoozed')
-  snoozed.appName = 'Noisy'
-  s.admit(s.fakeNotification(1, 'Other source'), snoozed)
-  const group = s.toasts.get(0).groupKey
-  s.snoozes[group] = 1
-  assert.deepEqual(summaries(s.recentForPanel(1)), ['Other source'])
-  const held = s.fakeNotification(3, 'Held arrival')
-  held.appName = 'Noisy'
-  s.handleNotification(held)
-  delete s.snoozes[group]
-  assert.deepEqual(summaries(s.recentForPanel(5)), ['Soon snoozed', 'Other source'])
-  s.snoozes[group] = 1
-  snoozed.replace({ summary: 'Updated while snoozed' })
-  s.drainCallLater()
-  delete s.snoozes[group]
-  assert.deepEqual(summaries(s.recentForPanel(5)), ['Other source'])
+  assert.ok(!JSON.stringify(s.historyEntries).includes('938271'))
 }
 
 for (const held of [true, false]) { // Capacity: at most 100 live senders, held or deferred.
@@ -648,13 +600,12 @@ for (const held of [true, false]) { // A cancelled pending card frees exactly on
   assert.equal(s.liveCount(), 0)
 }
 
-for (const quiet of ['silenced', 'snoozed']) { // Quiet closes a muted update; only Omarchy and bare notify-send critical get through.
+for (const holding of [false, true]) { // Silencing closes a muted update; only Omarchy and bare notify-send critical get through.
   const s = newCapacityScope()
-  s.pointerHolding = quiet === 'snoozed'
+  s.pointerHolding = holding
   const muted = s.fakeNotification(1, 'Before quiet')
   s.handleNotification(muted)
-  if (quiet === 'silenced') s.doNotDisturb = true
-  else s.snoozedUntil = () => 12345
+  s.doNotDisturb = true
   muted.replace({ summary: 'Quiet update' })
   s.releaseHeld()
   s.drainCallLater()
@@ -670,7 +621,7 @@ for (const quiet of ['silenced', 'snoozed']) { // Quiet closes a muted update; o
     s.handleNotification(n)
     s.releaseHeld()
     s.drainCallLater()
-    assert.equal(s.toasts.count - before, shows ? 1 : 0, quiet + ': ' + summary)
+    assert.equal(s.toasts.count - before, shows ? 1 : 0, (holding ? 'holding: ' : '') + summary)
     if (shows) assert.equal(s.toasts.get(0).summary, summary)
   }
 }
@@ -843,20 +794,13 @@ const eq = (actual, expected, message) => assert.deepEqual(plain(actual), plain(
   assert.equal(huge.execArgv, '')
 }
 
-{ // History is newest first, capped, and only as old as historyHours allows.
+{ // History is newest first, capped, and kept for a day.
   const now = 1e6, entry = (key, age, reason = 'dismissed') => ({ key, closed_ts: now - age, closed_reason: reason })
   let history = []
-  for (let i = 0; i < 150; i++) history = Store.addHistory(history, entry('n' + i, 150 - i), 24, now)
+  for (let i = 0; i < 150; i++) history = Store.addHistory(history, entry('n' + i, 150 - i), now)
   assert.equal(history.length, 100)
   assert.equal(history[0].key, 'n149')
-  eq(Store.retain([entry('a', 60), entry('b', 3599), entry('c', 3601)], 1, now).map(e => e.key), ['a', 'b'])
-  eq(Store.retain([entry('a', 60)], 0, now), [])
-  eq(Store.addHistory([], entry('a', 0), 0, now), [], 'historyHours 0 keeps none')
-  assert.equal(Store.retain([entry('a', 25 * 3600)], 168, now).length, 1)
-  assert.equal(Store.retain([entry('a', 25 * 3600)], 5, now).length, 0, 'an unknown retention is the default day')
-  // Held back means quiet kept it off the screen.
-  const rows = [entry('a', 1, 'snoozed'), entry('b', 2, 'dismissed'), entry('c', 3, 'silenced'), entry('d', 4, 'snoozed')]
-  eq(Store.held(rows, 2).map(e => e.key), ['a', 'c'])
+  eq(Store.retain([entry('a', 60), entry('b', 24 * 3600 - 1), entry('c', 24 * 3600 + 1)], now).map(e => e.key), ['a', 'b'])
   assert.equal(Store.closedEntry({ key: 'x' }, 'Bad reason!', 1).closed_reason, '')
 }
 
@@ -908,20 +852,17 @@ const eq = (actual, expected, message) => assert.deepEqual(plain(actual), plain(
   const restored = Store.restored(Store.parseLive(text)[0])
   eq([restored.restored, restored.duration, restored.execArgv, restored.glyph, restored.source],
                    [true, Store.RESTORE_GRACE, '["omarchy-update"]', '\u{f0954}', 'app.slack.com'])
-  assert.equal(Store.displayRows(history)[0].bodyLine, restored.bodyLine)
+  assert.equal(Store.normalise(history[0]).bodyLine, restored.bodyLine)
 }
 
 { // quiet.json keeps today's shape, and anything else in it is ignored.
-  const state = { snoozes: { 'web:app.slack.com': { until: 2e9, label: 'Slack', since: 1e9 } }, dnd: true, silencedSince: 5,
-                  codesBypassQuiet: false }
+  const state = { dnd: true }
   eq(Store.parseQuiet(Store.serialiseQuiet(state)), state)
   eq(JSON.parse(Store.serialiseQuiet(state)), state)
   for (const text of ['', 'nope', '[]', '"dnd"', 'null'])
     assert.equal(Store.parseQuiet(text), null, text)
-  const odd = Store.parseQuiet('{"snoozes":{"__proto__":{"until":1},"a":{"until":"x"},"b":null,"c":{"until":5,"label":7}},' +
-                               '"dnd":"yes","silencedSince":"later","codesBypassQuiet":"no"}')
-  eq(odd, { snoozes: { c: { until: 5, label: '7', since: 0 } }, dnd: false, silencedSince: 0, codesBypassQuiet: null })
-  assert.ok(!('until' in odd.snoozes), 'a __proto__ key cannot replace the prototype')
+  const odd = Store.parseQuiet('{"snoozes":{"a":{"until":5}},"dnd":"yes","silencedSince":"later","codesBypassQuiet":"no"}')
+  eq(odd, { dnd: false })
 }
 
 { // The service: shown rows are saved live, closed ones move to history, quiet
@@ -938,14 +879,8 @@ const eq = (actual, expected, message) => assert.deepEqual(plain(actual), plain(
   quiet.appName = 'notify-send'
   s.handleNotification(quiet)
   eq(s.historyEntries.map(e => e.summary + ':' + e.closed_reason), ['Silenced:silenced', 'Shown:expired'])
-  eq(Store.held(s.historyEntries, 10).map(e => e.summary), ['Silenced'])
   assert.equal(s.liveEntries.length, 0)
   assert.ok(s.unsaved.live && s.unsaved.history)
-  s.historyHours = 0
-  s.doNotDisturb = false
-  s.admit(s.fakeNotification(4, 'Unrecorded'))
-  s.finishClose(s.keyForOriginal(4), 'dismissed')
-  eq(s.historyEntries, [])
 }
 
 { // A pending card silenced before it showed leaves nothing to restore.
